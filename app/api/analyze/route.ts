@@ -1,7 +1,7 @@
 import { cleanJsonAIResponse } from "@/lib/clean-json"
 import type { ExtractedData, AuthenticityResult, DrugInteraction, AnalysisAction } from "@/lib/types"
 
-const GEMINI_API_KEY = "AIzaSyDznrvMLszKFpmofwUrEyvANM3xiYGLI8g"
+const GEMINI_API_KEY = "AIzaSyDznrvMLszKFpmofwUrEyvANM3xiY"
 const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
 async function callGemini(contents: any[], retries = 3): Promise<string> {
