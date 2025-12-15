@@ -10,15 +10,13 @@ interface AnalysisProgressProps {
 
 const steps = [
   { key: "ocr", label: "Uploading prescription", description: "Processing image" },
-  { key: "extracting", label: "Running OCR", description: "Extracting text from image" },
-  { key: "authenticity", label: "Extracting medicines", description: "Identifying medications" },
-  { key: "interactions", label: "Checking authenticity", description: "Verifying prescription" },
+  { key: "extracting", label: "Extracting medicines", description: "Identifying medications" },
 ] as const
 
 type StepKey = (typeof steps)[number]["key"]
 
 function getStepStatus(currentStep: AnalysisState["step"], stepKey: StepKey): "complete" | "current" | "pending" {
-  const stepOrder: StepKey[] = ["ocr", "extracting", "authenticity", "interactions"]
+  const stepOrder: StepKey[] = ["ocr", "extracting"]
   const currentIndex = stepOrder.indexOf(currentStep as StepKey)
   const stepIndex = stepOrder.indexOf(stepKey)
 

@@ -3,9 +3,6 @@
 import { RotateCcw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { ExtractedDataCard } from "@/components/extracted-data-card"
-import { AuthenticityCard } from "@/components/authenticity-card"
-import { InteractionsCard } from "@/components/interactions-card"
-import { RiskMeter } from "@/components/risk-meter"
 import type { AnalysisState } from "@/lib/types"
 
 interface ResultsSectionProps {
@@ -14,14 +11,11 @@ interface ResultsSectionProps {
 }
 
 export function ResultsSection({ state, onClear }: ResultsSectionProps) {
-  if (state.step !== "complete" || !state.extractedData || !state.authenticity) {
+  if (state.step !== "complete" || !state.extractedData) {
     return null
   }
 
-  const { extractedData, authenticity, interactions } = state
-  const severeInteractions = interactions.filter((i) => i.severity === "severe")
-  const moderateInteractions = interactions.filter((i) => i.severity === "moderate")
-  const overallRisk = severeInteractions.length > 0 ? "high" : moderateInteractions.length > 0 ? "moderate" : "low"
+  const { extractedData } = state
 
   return (
     <div className="space-y-6">
@@ -49,26 +43,16 @@ export function ResultsSection({ state, onClear }: ResultsSectionProps) {
                     )}
                     {extractedData.date && <p className="text-sm text-muted-foreground">{extractedData.date}</p>}
                   </div>
-                  <AuthenticityBadge status={authenticity.authenticity} />
                 </div>
               </div>
             </div>
           )}
 
           <ExtractedDataCard data={extractedData} />
-          <InteractionsCard interactions={interactions} />
-          {state.authenticity && <AuthenticityCard result={state.authenticity} />}
         </div>
 
         {/* Right column - Risk Summary */}
-        <div className="space-y-6">
-          <RiskMeter
-            risk={overallRisk}
-            medicationCount={extractedData.medicines.length}
-            interactionCount={severeInteractions.length + moderateInteractions.length}
-            authenticity={authenticity.authenticity}
-          />
-        </div>
+        <div className="space-y-6"></div>
       </div>
 
       <div className="flex justify-center pt-4">
@@ -78,23 +62,5 @@ export function ResultsSection({ state, onClear }: ResultsSectionProps) {
         </Button>
       </div>
     </div>
-  )
-}
-
-function AuthenticityBadge({ status }: { status: "genuine" | "suspicious" | "fake" }) {
-  const config = {
-    genuine: { label: "Authentic", bg: "bg-success/10", text: "text-success", border: "border-success/30" },
-    suspicious: { label: "Uncertain", bg: "bg-warning/10", text: "text-warning", border: "border-warning/30" },
-    fake: { label: "Suspicious", bg: "bg-destructive/10", text: "text-destructive", border: "border-destructive/30" },
-  }
-
-  const c = config[status]
-
-  return (
-    <span
-      className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium border ${c.bg} ${c.text} ${c.border}`}
-    >
-      {c.label}
-    </span>
   )
 }
