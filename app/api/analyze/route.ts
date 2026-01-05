@@ -1,7 +1,7 @@
 import { cleanJsonAIResponse } from "@/lib/clean-json"
-import type { ExtractedData, AuthenticityResult, AnalysisAction } from "@/lib/types"
+import type { ExtractedData, AuthenticityResult, AnalysisAction, DrugInteraction } from "@/lib/types"
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || ""
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "AIzaSyBIqcQ00T9ISXoBH2tn-PTgY67bB4i-QxM"
 const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
 async function callGemini(contents: any[], retries = 3): Promise<string> {
@@ -70,6 +70,8 @@ export async function POST(request: Request) {
         return await extractMedicines(ocrText)
       case "authenticity":
         return await checkAuthenticity(ocrText, extractedData)
+      case "interactions":
+        return await checkDrugInteractions(extractedData)
       default:
         return Response.json({ success: false, error: "Invalid action" }, { status: 400 })
     }
@@ -215,6 +217,45 @@ Return ONLY valid JSON in this format:
 
   if (!parsed) {
     return Response.json({ success: false, error: "Failed to parse authenticity result" }, { status: 500 })
+  }
+
+  return Response.json({ success: true, data: parsed })
+}
+
+async function checkDrugInteractions(extractedData?: ExtractedData) {
+  if (!extractedData || extractedData.medicines.length < 2) {
+    return Response.json({ success: true, data: [] })
+  }
+
+  const prompt = `Analyze these medications for potential harmful drug-drug interactions.
+Consider only the medicine names provided.
+
+Medicines:
+${extractedData.medicines.map((m) => `- ${m.name} (${m.dose || "N/A"})`).join("\n")}
+
+Return ONLY valid JSON in this format:
+[
+  {
+    "drug_a": "medicine name 1",
+    "drug_b": "medicine name 2",
+    "severity": "mild" | "moderate" | "severe",
+    "description": "Short explanation of the interaction and risk"
+  }
+]
+
+If no significant interactions are found, return an empty array [].
+Return ONLY JSON. No other text.`
+
+  const text = await callGemini([
+    {
+      parts: [{ text: prompt }],
+    },
+  ])
+
+  const parsed = cleanJsonAIResponse<DrugInteraction[]>(text)
+
+  if (!parsed) {
+    return Response.json({ success: false, error: "Failed to parse interactions result" }, { status: 500 })
   }
 
   return Response.json({ success: true, data: parsed })
