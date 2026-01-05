@@ -1,7 +1,7 @@
 import { cleanJsonAIResponse } from "@/lib/clean-json"
-import type { ExtractedData, AuthenticityResult, DrugInteraction, AnalysisAction } from "@/lib/types"
+import type { ExtractedData, AuthenticityResult, AnalysisAction } from "@/lib/types"
 
-const GEMINI_API_KEY = "AIzaSyDznrvMLszKFpmofwUrEyvANM3xiY"
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || ""
 const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
 
 async function callGemini(contents: any[], retries = 3): Promise<string> {
@@ -68,6 +68,8 @@ export async function POST(request: Request) {
         return await performOCR(imageUrl)
       case "extract":
         return await extractMedicines(ocrText)
+      case "authenticity":
+        return await checkAuthenticity(ocrText, extractedData)
       default:
         return Response.json({ success: false, error: "Invalid action" }, { status: 400 })
     }
@@ -175,3 +177,45 @@ ${ocrText}`
   return Response.json({ success: true, data: parsed })
 }
 
+async function checkAuthenticity(ocrText?: string, extractedData?: ExtractedData) {
+  if (!ocrText || !extractedData) {
+    return Response.json({ success: false, error: "OCR text and extracted data required" }, { status: 400 })
+  }
+
+  const prompt = `Analyze this prescription for authenticity. Evaluate:
+
+1. Doctor credentials (MBBS/MD/etc)
+2. Presence of registration/BMDC/license number
+3. Signature or signature placeholder
+4. Layout professionalism and formatting consistency
+5. Medication logic and dosage plausibility
+6. Any signs of tampering or digital manipulation (font mismatches, alignment issues)
+7. Unusual or dangerous medicine combinations
+
+OCR text:
+${ocrText}
+
+Extracted structured data:
+${JSON.stringify(extractedData, null, 2)}
+
+Return ONLY valid JSON in this format:
+
+{
+  "authenticity": "genuine" | "suspicious" | "fake",
+  "reasons": ["reason 1", "reason 2", ...]
+}`
+
+  const text = await callGemini([
+    {
+      parts: [{ text: prompt }],
+    },
+  ])
+
+  const parsed = cleanJsonAIResponse<AuthenticityResult>(text)
+
+  if (!parsed) {
+    return Response.json({ success: false, error: "Failed to parse authenticity result" }, { status: 500 })
+  }
+
+  return Response.json({ success: true, data: parsed })
+}
