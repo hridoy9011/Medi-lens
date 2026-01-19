@@ -1,7 +1,7 @@
 "use server"
 
 import { createClient } from "@/lib/supabase/server"
-import type { ExtractedData, AuthenticityResult, DrugInteraction } from "@/lib/types"
+import type { ExtractedData, AuthenticityResult, DrugInteraction, HealthReportAnalysis } from "@/lib/types"
 
 export async function saveAnalysis({
   imageUrl,
@@ -182,5 +182,107 @@ export async function getAnalysisHistory() {
   } catch (error) {
     console.error("Get history error:", error)
     return { success: false, error: "Failed to get history", data: [] }
+  }
+}
+
+export async function saveHealthReport({
+  imageUrl,
+  ocrText,
+  analysis,
+}: {
+  imageUrl: string
+  ocrText: string
+  analysis: HealthReportAnalysis
+}) {
+  const supabase = await createClient()
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) {
+    return { success: false, error: "Not authenticated" }
+  }
+
+  try {
+    const imageData = imageUrl.split(",")[1]
+    const binaryString = atob(imageData)
+    const bytes = new Uint8Array(binaryString.length)
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i)
+    }
+
+    const fileName = `${user.id}/lab-reports/${Date.now()}.jpg`
+
+    const { error: uploadError } = await supabase.storage.from("lab-reports").upload(fileName, bytes, {
+      contentType: "image/jpeg",
+      upsert: false,
+    })
+
+    if (uploadError) {
+      console.error("Upload error:", uploadError.message)
+      return { success: false, error: "Failed to upload image" }
+    }
+
+    // Get public URL
+    const {
+      data: { publicUrl },
+    } = supabase.storage.from("lab-reports").getPublicUrl(fileName)
+
+    // Insert health report record
+    const { data: report, error: reportError } = await supabase
+      .from("health_reports")
+      .insert({
+        user_id: user.id,
+        image_url: publicUrl,
+        ocr_text: ocrText,
+        extracted_data: analysis.extractedData,
+        overall_health_assessment: analysis.overallHealthAssessment,
+      })
+      .select()
+      .single()
+
+    if (reportError) {
+      console.error("Report error:", reportError.message)
+      return { success: false, error: "Failed to save health report" }
+    }
+
+    // Insert abnormalities
+    if (analysis.abnormalities.length > 0) {
+      const { error: abnormalitiesError } = await supabase.from("lab_abnormalities").insert(
+        analysis.abnormalities.map((abn) => ({
+          health_report_id: report.id,
+          test_name: abn.testName,
+          abnormality: abn.abnormality,
+          severity: abn.severity,
+          possible_causes: abn.possibleCauses,
+        })),
+      )
+
+      if (abnormalitiesError) {
+        console.error("Abnormalities error:", abnormalitiesError.message)
+      }
+    }
+
+    // Insert diet recommendations
+    if (analysis.dietRecommendations.length > 0) {
+      const { error: dietError } = await supabase.from("diet_recommendations").insert(
+        analysis.dietRecommendations.map((diet) => ({
+          health_report_id: report.id,
+          category: diet.category,
+          foods: diet.foods,
+          benefits: diet.benefits,
+          reason_for_abnormality: diet.reasonForAbnormality,
+        })),
+      )
+
+      if (dietError) {
+        console.error("Diet error:", dietError.message)
+      }
+    }
+
+    return { success: true, reportId: report.id }
+  } catch (error) {
+    console.error("Save health report error:", error)
+    return { success: false, error: "Failed to save health report" }
   }
 }
