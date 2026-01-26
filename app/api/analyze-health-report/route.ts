@@ -1,7 +1,8 @@
 import { cleanJsonAIResponse } from "@/lib/clean-json"
 import type { HealthReportAnalysis } from "@/lib/types"
+import { NextResponse } from "next/server"
 
-const GEMINI_API_KEY = ""
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY
 const MODEL_NAME = "gemini-3-flash-preview"
 const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent`
 
@@ -36,20 +37,26 @@ async function callGemini(contents: any[], isJsonResponse = false, retries = 3):
       if (!response.ok) {
         console.error(`[v0] Gemini API Error (attempt ${attempt + 1}/${retries}):`, data?.error?.message)
 
-        if (response.status === 503 && attempt < retries - 1) {
-          const delay = Math.pow(2, attempt) * 3000
-          console.log(`[v0] Model overloaded. Waiting ${delay / 1000}s before retry...`)
+        // Handle 429 (Rate Limit) and 503 (Overloaded) with exponential backoff
+        if ((response.status === 429 || response.status === 503) && attempt < retries - 1) {
+          const delay = Math.pow(2, attempt) * 4000
+          console.log(`[v0] API limited or overloaded (Health Report). Waiting ${delay / 1000}s before retry...`)
           await new Promise((resolve) => setTimeout(resolve, delay))
           continue
         }
 
-        throw new Error(data?.error?.message || "Gemini API Analysis Failed")
+        const errorMsg = data?.error?.message || "Gemini API Analysis Failed"
+        if (response.status === 429) {
+          throw new Error("Analysis is temporarily unavailable due to high demand (Rate Limit). Please wait a few seconds and try again.")
+        }
+        throw new Error(errorMsg)
       }
 
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text
       if (!text) throw new Error("Empty response from AI")
       return text
     } catch (error: any) {
+      console.error(`[v0] Gemini Health Fetch Catch (attempt ${attempt + 1}/${retries}):`, error.message)
       if (attempt === retries - 1) throw error
       await new Promise((resolve) => setTimeout(resolve, 1000))
     }
@@ -57,92 +64,121 @@ async function callGemini(contents: any[], isJsonResponse = false, retries = 3):
   throw new Error("Service unavailable after maximum retries. Please try again in a moment.")
 }
 
-export async function POST(request: Request) {
+async function validateMedicalReport(base64Image: string, mimeType: string): Promise<{ isValid: boolean; message: string }> {
+  const validationPrompt = `Is this image a medical laboratory test report or health report? A valid medical report should contain:
+- Lab test results with values
+- Test parameters and reference ranges
+- Lab name or medical facility information
+- Patient information
+
+Answer with ONLY "YES" or "NO" followed by a brief reason (one sentence).`
+
   try {
-    const { action, imageUrl } = await request.json()
-
-    if (action === "analyze-lab-report") {
-      if (!imageUrl) {
-        return Response.json({ success: false, error: "Image URL required" }, { status: 400 })
-      }
-
-      // Fetch image and convert to Base64
-      const imageResponse = await fetch(imageUrl)
-      if (!imageResponse.ok) throw new Error(`Image fetch failed: ${imageResponse.statusText}`)
-
-      const arrayBuffer = await imageResponse.arrayBuffer()
-      const base64Image = Buffer.from(arrayBuffer).toString("base64")
-      const mimeType = imageResponse.headers.get("content-type") || "image/jpeg"
-
-      // Lab report analysis prompt
-      const prompt = `You are a medical data analyst and nutrition expert. Analyze this blood test and medical lab report image VERY carefully.
-
-CRITICAL INSTRUCTIONS:
-1. Extract ALL test values with their reference ranges - be precise with numbers
-2. Identify EVERY abnormality by comparing actual values to reference ranges
-3. For EACH abnormality, determine severity and root cause
-4. Generate DETAILED, SPECIFIC, ACTIONABLE diet recommendations tailored to the patient's specific test values
-5. Return ONLY valid JSON with NO markdown, NO explanations, NO code blocks
-
-Return this EXACT JSON structure:
-{
-  "rawText": "all extracted text from the report",
-  "analysis": {
-    "extractedData": {
-      "patientName": "patient name or null",
-      "testDate": "test date (YYYY-MM-DD format) or null",
-      "labName": "lab name or null",
-      "doctorName": "doctor name or null",
-      "testResults": [
+    const resultText = await callGemini(
+      [
         {
-          "testName": "test name (e.g., Hemoglobin)",
-          "value": "numeric value or string",
-          "normalRange": "normal range (e.g., 12.0-16.0)",
-          "unit": "unit (e.g., g/dL)",
-          "status": "normal or low or high or abnormal"
-        }
-      ]
-    },
-    "abnormalities": [
-      {
-        "testName": "test name",
-        "abnormality": "detailed description of what is abnormal (e.g., 'Hemoglobin is 9.5 g/dL, which is 25% below normal range of 12.0-16.0')",
-        "severity": "mild or moderate or severe",
-        "possibleCauses": ["cause1", "cause2", "cause3"]
-      }
-    ],
-    "dietRecommendations": [
-      {
-        "category": "specific food category (e.g., Iron-rich foods, High fiber foods, Vitamin supplements, Protein-rich foods, Low sodium foods, Healthy fats, Calcium-rich foods, Potassium-rich foods)",
-        "foods": ["food1 (serving size)", "food2 (serving size)", "food3 (serving size)", "food4 (serving size)", "food5 (serving size)"],
-        "servingFrequency": "how often to consume (e.g., 2-3 times per week, daily, 3-4 times per week)",
-        "dietaryTip": "specific preparation method or consumption tip (e.g., 'Pair with vitamin C for better iron absorption', 'Cook in cast iron cookware')",
-        "benefits": "detailed scientific explanation of how these foods help the specific abnormality - minimum 2-3 sentences",
-        "reasonForAbnormality": "specific abnormality this addresses"
-      }
-    ],
-    "overallHealthAssessment": "comprehensive health summary with specific dietary and lifestyle recommendations based on identified abnormalities. Include any foods to AVOID."
+          parts: [
+            { text: validationPrompt },
+            { inline_data: { mime_type: mimeType, data: base64Image } },
+          ],
+        },
+      ],
+      false,
+    )
+
+    const isValid = resultText.trim().toUpperCase().startsWith("YES")
+    return {
+      isValid,
+      message: isValid ? "Valid medical report detected" : resultText.replace(/^NO[:\s]*/i, "").trim()
+    }
+  } catch (error) {
+    console.error("[v0] Validation error:", error)
+    // On validation error, allow processing to continue (fail open)
+    return { isValid: true, message: "Validation check skipped due to error" }
   }
 }
 
-CRITICAL REQUIREMENTS for dietRecommendations:
-- MUST have minimum 1 recommendation per abnormality identified
-- MUST include at least 5-6 specific foods per category with serving sizes
-- MUST include serving frequency (daily/weekly)
-- MUST include dietary tips for maximum absorption/effectiveness
-- MUST include detailed benefits (2-3 sentences minimum)
-- Generate 3-5 different dietary categories based on the abnormalities found
-- Be SPECIFIC and ACTIONABLE - not generic
+export async function POST(request: Request) {
+  console.log("[v0] POST /api/analyze-health-report started")
+  try {
+    const { action, imageUrl } = await request.json()
+    console.log(`[v0] Health Action: ${action}, Image provided: ${!!imageUrl}`)
 
-Example for low hemoglobin:
+    if (action === "analyze-lab-report") {
+      if (!imageUrl) {
+        return NextResponse.json({ success: false, error: "Image URL required" }, { status: 400 })
+      }
+
+      let base64Image = ""
+      let mimeType = "image/jpeg"
+
+      if (imageUrl.startsWith("data:")) {
+        console.log("[v0] Handling health data URL directly")
+        const matches = imageUrl.match(/^data:([^;]+);base64,(.+)$/)
+        if (matches) {
+          mimeType = matches[1]
+          base64Image = matches[2]
+        } else {
+          throw new Error("Invalid data URL format")
+        }
+      } else {
+        console.log("[v0] Fetching health image from URL:", imageUrl.substring(0, 50) + "...")
+        const imageResponse = await fetch(imageUrl)
+        if (!imageResponse.ok) throw new Error(`Image fetch failed: ${imageResponse.statusText}`)
+
+        const arrayBuffer = await imageResponse.arrayBuffer()
+        base64Image = Buffer.from(arrayBuffer).toString("base64")
+        mimeType = imageResponse.headers.get("content-type") || "image/jpeg"
+      }
+
+      console.log("[v0] Starting unified health report analysis...")
+
+      // Lab report analysis prompt
+      const prompt = `Analyze this medical laboratory test report carefully and return a valid JSON response. Follow these steps:
+
+1. VALIDATION: Check if this is a valid medical laboratory report.
+   - If NOT a valid report, return ONLY: {"is_valid": false, "validation_error": "Reason why it's invalid"}
+
+2. FULL ANALYSIS (Only if valid):
+   - Extract raw text.
+   - Extract patient info, date, lab/doctor name.
+   - Extract ALL test results (values, ranges, units).
+   - Identify abnormalities and generate dietary recommendations.
+
+Return ONLY this JSON structure (no markdown, no backticks):
 {
-  "category": "Iron-rich foods",
-  "foods": ["Red meat/beef (100g daily)", "Spinach (1 cup cooked daily)", "Lentils (½ cup cooked, 3x weekly)", "Fortified cereals (1 serving daily)", "Oysters (6-12 oysters, 2x weekly)"],
-  "servingFrequency": "daily for best results",
-  "dietaryTip": "Always consume iron-rich foods with orange juice or citrus fruits for 3x better absorption. Avoid tea/coffee with iron meals.",
-  "benefits": "Iron is essential for hemoglobin production. These foods provide heme iron (meat) or non-heme iron (plant) that your body needs to increase oxygen-carrying capacity. Regular consumption can improve hemoglobin levels within 4-6 weeks.",
-  "reasonForAbnormality": "Low hemoglobin (anemia) requires iron supplementation through diet"
-}`
+  "is_valid": true,
+  "rawText": "all extracted text",
+  "analysis": {
+    "extractedData": {
+      "patientName": "Name or null",
+      "testDate": "YYYY-MM-DD or null",
+      "labName": "Lab or null",
+      "doctorName": "Doctor or null",
+      "testResults": [
+        { "testName": "Hemoglobin", "value": "12.5", "normalRange": "13.5-17.5", "unit": "g/dL", "status": "low" }
+      ]
+    },
+    "abnormalities": [
+      { "testName": "Hemoglobin", "abnormality": "13% below range", "severity": "mild", "possibleCauses": ["Iron deficiency"] }
+    ],
+    "dietRecommendations": [
+      {
+        "category": "Iron-rich foods",
+        "foods": ["Red meat", "Spinach"],
+        "servingFrequency": "daily",
+        "dietaryTip": "Pair with Vitamin C",
+        "benefits": "Helps increase iron absorption to boost hemoglobin levels.",
+        "reasonForAbnormality": "Anemia/Low Hemoglobin"
+      }
+    ],
+    "overallHealthAssessment": "Comprehensive summary of health findings."
+  }
+}
+
+CRITICAL: 
+- For dietRecommendations, provide at least 5 specific foods per category.
+- Scientific explanation for benefits should be 2-3 sentences.`
 
       // Request analysis
       const resultText = await callGemini(
@@ -158,19 +194,30 @@ Example for low hemoglobin:
       )
 
       // Parse and return
-      console.log("[v0] AI Response (first 500 chars):", resultText.substring(0, 500))
+      console.log("[v0] AI Analysis complete")
       const parsed = cleanJsonAIResponse(resultText)
       if (!parsed) {
         console.error("[v0] Failed to parse JSON response:", resultText)
-        return Response.json({ success: false, error: "Failed to parse AI response. Please try again." }, { status: 500 })
+        return NextResponse.json({ success: false, error: "Failed to parse AI response. Please try again." }, { status: 500 })
       }
 
-      return Response.json({ success: true, data: parsed })
+      if (parsed.is_valid === false) {
+        console.log("[v0] Health Validation failed:", parsed.validation_error)
+        return NextResponse.json({
+          success: false,
+          error: "Invalid image type",
+          details: "This doesn't appear to be a valid medical laboratory report. Please upload a medical report image.",
+          validationMessage: parsed.validation_error
+        }, { status: 400 })
+      }
+
+      console.log("[v0] Analysis successful")
+      return NextResponse.json({ success: true, data: parsed })
     }
 
-    return Response.json({ success: false, error: "Invalid action" }, { status: 400 })
+    return NextResponse.json({ success: false, error: "Invalid action" }, { status: 400 })
   } catch (error: any) {
     console.error("[v0] Route error:", error.message)
-    return Response.json({ success: false, error: error.message || "Internal error" }, { status: 500 })
+    return NextResponse.json({ success: false, error: error.message || "Internal error" }, { status: 500 })
   }
 }
