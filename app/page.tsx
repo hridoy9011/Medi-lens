@@ -1,6 +1,7 @@
 import { Header } from "@/components/header"
 import { HeroSection } from "@/components/hero-section"
 import { PrescriptionAnalyzer } from "@/components/prescription-analyzer"
+import { LabReportAnalyzer } from "@/components/lab-report-analyzer"
 import { FeatureCards } from "@/components/feature-cards"
 
 export default function Home() {
@@ -11,8 +12,12 @@ export default function Home() {
       <main className="flex-1">
         <HeroSection />
 
-        <section id="upload" className="container mx-auto px-4 py-12 max-w-5xl">
+        <section id="prescriptions" className="container mx-auto px-4 py-12 max-w-5xl">
           <PrescriptionAnalyzer />
+        </section>
+
+        <section id="health-reports" className="container mx-auto px-4 py-12 max-w-5xl">
+          <LabReportAnalyzer />
         </section>
 
         <FeatureCards />
