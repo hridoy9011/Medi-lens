@@ -10,8 +10,27 @@ let client: ReturnType<typeof createSupabaseClient> | null = null
 export function createClient() {
   if (client) return client
 
-  client = createSupabaseClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+  client = createSupabaseClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: {
+      persistSession: true,
+      storageKey: 'sb-nxlaqaknuvjqsmmwpung-auth-token',
+      storage: {
+        getItem: (key) => {
+          if (typeof document === 'undefined') return null
+          const cookie = document.cookie.split('; ').find(row => row.startsWith(`${key}=`))
+          return cookie ? decodeURIComponent(cookie.split('=')[1]) : null
+        },
+        setItem: (key, value) => {
+          if (typeof document === 'undefined') return
+          document.cookie = `${key}=${encodeURIComponent(value)}; path=/; max-age=31536000; SameSite=Lax`
+        },
+        removeItem: (key) => {
+          if (typeof document === 'undefined') return
+          document.cookie = `${key}=; path=/; max-age=0; SameSite=Lax`
+        }
+      }
+    }
+  })
 
   return client
 }
-
