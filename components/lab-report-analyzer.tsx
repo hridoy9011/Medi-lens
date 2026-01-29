@@ -67,22 +67,38 @@ export function LabReportAnalyzer() {
           body: JSON.stringify({ action: "analyze-lab-report", imageUrl: imageBase64 }),
         })
 
+        // Handle non-OK responses
         if (!response.ok) {
-          const errorText = await response.text()
-          throw new Error(`API Error (${response.status}): ${errorText}`)
+          let userMessage = "Unable to analyze the image"
+          try {
+            const errorData = await response.json()
+            userMessage = errorData.details || errorData.error || userMessage
+            if (errorData.validationMessage && errorData.validationMessage.trim()) {
+              userMessage += `\n\n${errorData.validationMessage.trim()}`
+            }
+          } catch (parseError) {
+            console.error("Non-JSON error response:", response.status, response.statusText)
+            userMessage = `Server Error (${response.status}): ${response.statusText}. Please try again.`
+          }
+          throw new Error(userMessage)
         }
 
+        // Parse successful response
         let result
         try {
           result = await response.json()
         } catch (parseError) {
-          const responseText = await response.text()
-          console.error("[v0] Failed to parse response:", responseText)
-          throw new Error("Server returned invalid response")
+          console.error("[v0] Failed to parse response:", parseError)
+          throw new Error("Unable to read the analysis results. Please try again.")
         }
 
         if (!result.success) {
-          throw new Error(result.error || "Analysis failed")
+          // Handle validation errors from successful response
+          let errorMessage = result.details || result.error || "Analysis failed"
+          if (result.validationMessage && result.validationMessage.trim()) {
+            errorMessage += `\n\n${result.validationMessage.trim()}`
+          }
+          throw new Error(errorMessage)
         }
 
         const analysisData = result.data
@@ -135,9 +151,9 @@ export function LabReportAnalyzer() {
       </div>
 
       {state.step === "idle" && !state.imageUrl && (
-        <UploadZone 
-          onImageSelect={analyzeReport} 
-          isAnalyzing={state.step === "analyzing"} 
+        <UploadZone
+          onImageSelect={analyzeReport}
+          isAnalyzing={false}
           currentImage={state.imageUrl}
           onClear={handleReset}
         />
@@ -154,9 +170,18 @@ export function LabReportAnalyzer() {
           )}
 
           {state.error && (
-            <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-700">
-              <p className="font-semibold">Error: {state.error}</p>
-              <p className="text-sm">Please try uploading a clearer image or try again later.</p>
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+              <p className="font-semibold text-amber-900 mb-2">💡 Let's try a different image</p>
+              <p className="text-sm text-amber-800 mb-4 whitespace-pre-line">{state.error}</p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="bg-transparent border-amber-300 text-amber-900 hover:bg-amber-100"
+                onClick={handleReset}
+              >
+                <RotateCcw className="h-4 w-4 mr-2" />
+                Upload a Different Image
+              </Button>
             </div>
           )}
 
