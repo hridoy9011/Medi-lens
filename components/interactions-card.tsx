@@ -93,7 +93,8 @@ export function InteractionsCard({ interactions }: InteractionsCardProps) {
           </div>
 
           {sortedInteractions.map((interaction, index) => {
-            const config = severityConfig[interaction.severity]
+            const severity = (interaction.severity || "mild").toLowerCase() as keyof typeof severityConfig
+            const config = severityConfig[severity] || severityConfig.mild
             const Icon = config.icon
 
             return (
