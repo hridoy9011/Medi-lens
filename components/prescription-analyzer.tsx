@@ -6,9 +6,10 @@ import { Button } from "@/components/ui/button"
 import { UploadZone } from "@/components/upload-zone"
 import { AnalysisProgress } from "@/components/analysis-progress"
 import { ResultsSection } from "@/components/results-section"
+import { DiagnosisAnalysis } from "@/components/diagnosis-analysis"
 import { createClient } from "@/lib/supabase/client"
 import { saveAnalysis } from "@/lib/supabase/actions"
-import type { AnalysisState, ExtractedData, AuthenticityResult, DrugInteraction } from "@/lib/types"
+import type { AnalysisState, ExtractedData, AuthenticityResult, DrugInteraction, DiagnosisAnalysis as DiagnosisAnalysisType } from "@/lib/types"
 import type { User } from "@supabase/supabase-js"
 
 const initialState: AnalysisState = {
@@ -18,6 +19,7 @@ const initialState: AnalysisState = {
   extractedData: null,
   authenticity: null,
   interactions: [],
+  diagnosisAnalysis: null,
   error: null,
 }
 
@@ -64,71 +66,59 @@ export function PrescriptionAnalyzer() {
       setSaved(false)
 
       try {
-        // Step 1: OCR
-        updateState({ step: "ocr" })
-        const ocrResponse = await fetch("/api/analyze", {
+        // Single all-in-one API call (4x more efficient!)
+        updateState({ step: "analyzing" })
+        const response = await fetch("/api/analyze", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "ocr", imageUrl: imageBase64 }),
+          body: JSON.stringify({ action: "analyze-full", imageUrl: imageBase64 }),
         })
-        const ocrResult = await ocrResponse.json()
 
-        if (!ocrResult.success) {
-          throw new Error(ocrResult.error || "OCR failed")
+        // Handle non-OK responses  
+        if (!response.ok) {
+          let userMessage = "Unable to analyze the image"
+          try {
+            const errorData = await response.json()
+            userMessage = errorData.details || errorData.error || userMessage
+            if (errorData.validationMessage && errorData.validationMessage.trim()) {
+              userMessage += `\n\n${errorData.validationMessage.trim()}`
+            }
+          } catch (parseError) {
+            console.error("Non-JSON error response:", response.status, response.statusText)
+            userMessage = `Server Error (${response.status}): ${response.statusText}. Please try again.`
+          }
+          throw new Error(userMessage)
         }
 
-        const ocrText = ocrResult.data as string
-        updateState({ ocrText })
-
-        // Step 2: Extract medicines
-        updateState({ step: "extracting" })
-        const extractResponse = await fetch("/api/analyze", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "extract", ocrText }),
-        })
-        const extractResult = await extractResponse.json()
-
-        if (!extractResult.success) {
-          throw new Error(extractResult.error || "Extraction failed")
+        // Parse successful response
+        let result
+        try {
+          result = await response.json()
+        } catch (parseError) {
+          console.error("[v0] Failed to parse response:", parseError)
+          throw new Error("Unable to read the analysis results. Please try again.")
         }
 
-        const extractedData = extractResult.data as ExtractedData
-        updateState({ extractedData })
-
-        // Step 3: Check authenticity
-        updateState({ step: "authenticity" })
-        const authResponse = await fetch("/api/analyze", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "authenticity", ocrText, extractedData }),
-        })
-        const authResult = await authResponse.json()
-
-        if (!authResult.success) {
-          throw new Error(authResult.error || "Authenticity check failed")
+        if (!result.success) {
+          // Handle validation errors from successful response
+          let errorMessage = result.details || result.error || "Analysis failed"
+          if (result.validationMessage && result.validationMessage.trim()) {
+            errorMessage += `\n\n${result.validationMessage.trim()}`
+          }
+          throw new Error(errorMessage)
         }
 
-        const authenticity = authResult.data as AuthenticityResult
-        updateState({ authenticity })
-
-        // Step 4: Check interactions
-        updateState({ step: "interactions" })
-        const interactionsResponse = await fetch("/api/analyze", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "interactions", extractedData }),
+        const analysisData = result.data
+        updateState({
+          ocrText: analysisData.rawText,
+          extractedData: analysisData.extracted,
+          authenticity: analysisData.authenticity,
+          interactions: analysisData.interactions?.filter((i: DrugInteraction) => i.severity !== "none") || [],
+          diagnosisAnalysis: analysisData.diagnosisAnalysis || null,
+          step: "complete",
         })
-        const interactionsResult = await interactionsResponse.json()
-
-        if (!interactionsResult.success) {
-          throw new Error(interactionsResult.error || "Interactions check failed")
-        }
-
-        const interactions = interactionsResult.data as DrugInteraction[]
-        updateState({ interactions, step: "complete" })
       } catch (error) {
-        console.error("Analysis error:", error)
+        console.error("[v0] Analysis error:", error)
         updateState({
           step: "error",
           error: error instanceof Error ? error.message : "Analysis failed",
@@ -139,22 +129,31 @@ export function PrescriptionAnalyzer() {
   )
 
   const handleSave = async () => {
-    if (!state.imageUrl || !state.ocrText || !state.extractedData || !state.authenticity) {
+    if (!user || !state.imageUrl || !state.ocrText || !state.extractedData || !state.authenticity) {
+      if (!user) updateState({ error: "Client-side: Please sign in to save your analysis" })
       return
     }
 
     setSaving(true)
-    const result = await saveAnalysis({
-      imageUrl: state.imageUrl,
-      ocrText: state.ocrText,
-      extractedData: state.extractedData,
-      authenticity: state.authenticity,
-      interactions: state.interactions,
-    })
-    setSaving(false)
+    try {
+      const result = await saveAnalysis({
+        imageUrl: state.imageUrl,
+        ocrText: state.ocrText,
+        extractedData: state.extractedData,
+        authenticity: state.authenticity,
+        interactions: state.interactions,
+        diagnosisAnalysis: state.diagnosisAnalysis,
+      })
 
-    if (result.success) {
-      setSaved(true)
+      if (result.success) {
+        setSaved(true)
+      } else {
+        updateState({ error: result.error })
+      }
+    } catch (err: any) {
+      updateState({ error: err.message || "Failed to save analysis" })
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -175,17 +174,17 @@ export function PrescriptionAnalyzer() {
       />
 
       {state.error && (
-        <div className="p-6 rounded-2xl bg-destructive/10 border border-destructive/20">
-          <p className="text-base text-destructive font-semibold mb-3">Analysis Error</p>
-          <p className="text-sm text-destructive/80 mb-4">{state.error}</p>
+        <div className="p-6 rounded-2xl bg-amber-50 border border-amber-200">
+          <p className="text-base text-amber-900 font-semibold mb-3">💡 Oops! Let's try that again</p>
+          <p className="text-sm text-amber-800 mb-4 whitespace-pre-line">{state.error}</p>
           <Button
             variant="outline"
             size="sm"
-            className="bg-transparent border-destructive/30 text-destructive hover:bg-destructive/10"
+            className="bg-transparent border-amber-300 text-amber-900 hover:bg-amber-100"
             onClick={handleClear}
           >
             <RotateCcw className="h-4 w-4 mr-2" />
-            Try Again
+            Upload a Different Image
           </Button>
         </div>
       )}
